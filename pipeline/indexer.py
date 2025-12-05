@@ -22,11 +22,13 @@ class ChromaIndexer:
         return self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
 
     def add(self, ids, texts, metadatas):
-        # Chroma accepts raw texts and metadatas; it will embed if configured
-        # But we will add embeddings directly via .add with documents
-        self.collection.add(ids=ids, documents=texts, metadatas=metadatas)
-        self.client.persist()
-        logging.info('Added %d docs to Chroma', len(ids))
+    self.collection.add(
+        ids=ids,
+        documents=texts,
+        metadatas=metadatas
+    )
+    # Newer Chroma versions persist automatically when using persist_directory
+
 
     def query(self, text, top_k=5):
         results = self.collection.query(query_texts=[text], n_results=top_k)
