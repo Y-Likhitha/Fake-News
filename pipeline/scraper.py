@@ -94,4 +94,4 @@ def scrape_factly(limit=30):
 
     try:
         pg = requests.get(base, timeout=15)
-        soup = BeautifulSoup(pg.text,
+        soup = BeautifulSoup(pg.text,"html.parser")
