@@ -34,8 +34,6 @@ with st.sidebar:
             st.subheader(f"Decision: {res.get('decision')}")
             if res.get('matches'):
                 for m in res['matches']:
-                    st.markdown(f"""**{m.get('title','—')}**  
-Source: {m.get('source')} — Verdict: {m.get('verdict','Unknown')} — Similarity: {m.get('score'):.3f}  
-URL: {m.get('url')}""")
+                    st.markdown(f"""**{m.get('title','—')}**Source: {m.get('source')} — Verdict: {m.get('verdict','Unknown')} — Similarity: {m.get('score'):.3f}URL: {m.get('url')}""")
             else:
                 st.info('No close fact-check found.')
