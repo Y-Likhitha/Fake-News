@@ -51,3 +51,7 @@ if st.button('Check news'):
                 st.markdown(f"**{m.get('title','—')}**  \nSource: {m.get('source')} — Verdict: {m.get('verdict','Unknown')} — Similarity: {m.get('score'):.3f}  \nURL: {m.get('url')}")
         else:
             st.info('No close fact-check found.')
+if st.button("Test Google API"):
+    from google_api import fetch_google_factchecks
+    res = fetch_google_factchecks(query="google fake company")
+    st.write(res)
