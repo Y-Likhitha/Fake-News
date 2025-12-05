@@ -1,7 +1,7 @@
 import os, json
 from pathlib import Path
 from scraper import fetch_all
-from indexer import SimpleIndexer
+from .indexer import SimpleIndexer
 
 DATA_DIR = os.getenv('DATA_DIR','./data')
 CHROMA_DIR = os.getenv('CHROMA_PERSIST_DIR','./data/chroma_db')
