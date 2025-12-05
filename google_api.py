@@ -3,11 +3,10 @@ import os
 import requests
 from datetime import datetime
 
-GOOGLE_FACTCHECK_API_KEY=os.getenv("GOOGLE_FACTCHECK_API_KEY")
+# Load API key correctly
+API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY")
 
-ENDPOINT = (
-    "https://factchecktools.googleapis.com/v1alpha1/claims:search"
-)
+ENDPOINT = "https://factchecktools.googleapis.com/v1alpha1/claims:search"
 
 
 def fetch_google_factchecks(query=None, lang="en", page_size=20):
@@ -20,12 +19,12 @@ def fetch_google_factchecks(query=None, lang="en", page_size=20):
         return []
 
     params = {
-        "key": GOOGLE_FACTCHECK_API_KEY,
+        "key": API_KEY,
         "pageSize": page_size,
         "languageCode": lang
     }
 
-    # optional: query specific text
+    # Optional: add query text
     if query:
         params["query"] = query
 
@@ -36,21 +35,18 @@ def fetch_google_factchecks(query=None, lang="en", page_size=20):
         items = []
         for c in data.get("claims", []):
             claim = c.get("text", "")
-            claim_url = c.get("claimReview", [{}])[0].get("url", "")
-            source = c.get("claimReview", [{}])[0].get("publisher", {}).get("name", "")
-            title = c.get("claimReview", [{}])[0].get("title", "")
-            verdict = c.get("claimReview", [{}])[0].get("textualRating", "")
-            date = c.get("claimReview", [{}])[0].get("reviewDate", "")
+            review = c.get("claimReview", [{}])[0]
 
             items.append({
-                "title": title or claim[:120],
+                "title": review.get("title") or claim[:120],
                 "text": claim,
-                "source": source,
-                "url": claim_url,
-                "verdict": verdict,
-                "published_at": date,
-                "retrieved_at": datetime.utcnow().isoformat()
+                "source": review.get("publisher", {}).get("name", ""),
+                "url": review.get("url", ""),
+                "verdict": review.get("textualRating", ""),
+                "published_at": review.get("reviewDate", ""),
+                "retrieved_at": datetime.utcnow().isoformat(),
             })
+
         return items
 
     except Exception as e:
