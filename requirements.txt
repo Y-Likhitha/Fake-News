@@ -1,0 +1,8 @@
+streamlit
+requests
+feedparser
+sentence-transformers
+chromadb
+python-dotenv
+pandas
+tqdm
