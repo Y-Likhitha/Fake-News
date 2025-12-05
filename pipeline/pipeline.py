@@ -124,6 +124,12 @@ def run_pipeline():
 
     # Index into Chroma
     indexer = ChromaIndexer(persist_dir=CHROMA_DIR)
-    indexer.add(clean_ids, clean_texts, clean_metas)
+
+    # Avoid inserting empty lists into Chroma
+    if clean_ids and clean_texts and clean_metas:
+        indexer.add(clean_ids, clean_texts, clean_metas)
+    else:
+        print("⚠️ No valid documents to add — scraping may have returned no usable text.")
+
 
     return len(new_records)
