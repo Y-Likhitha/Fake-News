@@ -48,11 +48,6 @@ if st.button('Check news'):
 
         if res.get('matches'):
             for m in res['matches']:
-                st.markdown(
-                    f"**{m.get('title','—')}**  \n"
-                    f"Source: {m.get('source')} — Verdict: {m.get('verdict','Unknown')} — "
-                    f"Similarity: {m.get('score'):.3f}  \n"
-                    f"URL: {m.get('url')}"
-                )
+                st.markdown(f"**{m.get('title','—')}**  \nSource: {m.get('source')} — Verdict: {m.get('verdict','Unknown')} — Similarity: {m.get('score'):.3f}  \nURL: {m.get('url')}")
         else:
             st.info('No close fact-check found.')
