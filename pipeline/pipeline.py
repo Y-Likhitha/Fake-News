@@ -30,14 +30,18 @@ def save_raw(items):
 
 
 def normalize(record):
+    text = record.get("text") or record.get("claim") or ""
+    title = record.get("title") or record.get("claim") or "Untitled"
+
     return {
-        "id": record.get("url") or record.get("claim"),
-        "title": record.get("title") or record.get("claim"),
-        "text": record.get("text") or record.get("claim"),
+        "id": record.get("url") or record.get("claim") or str(abs(hash(text))),
+        "title": title,
+        "text": text.strip(),
         "source": record.get("source"),
         "url": record.get("url"),
         "verdict": record.get("verdict")
     }
+
 
 
 def append_unique(existing, new_items):
