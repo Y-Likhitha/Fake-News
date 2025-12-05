@@ -32,7 +32,7 @@ class QueryService:
                 "title": meta.get("title"),
                 "source": meta.get("source"),
                 "url": meta.get("url"),
-                "score": float(dist)
+                "score": dist
             })
 
         # Final decision
