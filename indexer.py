@@ -1,3 +1,4 @@
+FORCE_RELOAD = "v3"
 import os
 import shutil
 import math
