@@ -1,8 +1,7 @@
-FORCE_RELOAD = "v3"
 import os
 import shutil
-import math
 import logging
+import math
 from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.errors import InvalidArgumentError, InternalError
@@ -10,36 +9,62 @@ from chromadb.errors import InvalidArgumentError, InternalError
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Disable ONNX conversion (important!)
-os.environ.setdefault("CHROMA_CONVERT_EMBEDDINGS_TO_ONNX", "false")
-os.environ.setdefault("CHROMA_DISABLE_EMBEDDINGS_H5", "true")
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+# Disable problematic ONNX conversions
+os.environ["CHROMA_CONVERT_EMBEDDINGS_TO_ONNX"] = "false"
+os.environ["CHROMA_DISABLE_EMBEDDINGS_H5"] = "true"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-EMBED_MODEL = "all-mpnet-base-v2"  # 768-dim
+EMBED_MODEL = "all-mpnet-base-v2"  # 768-dim model
 
 
 class ChromaIndexer:
     def __init__(self, persist_dir="./data/chroma_db"):
-        """
-        The indexer is used ONLY during pipeline ingestion.
-        QueryEngine loads embeddings separately (no DB reset).
-        """
         self.persist_dir = persist_dir
         self.model = SentenceTransformer(EMBED_MODEL)
 
-        # Persistent client
-        self.client = chromadb.PersistentClient(path=self.persist_dir)
+        logger.info(f"Initializing ChromaIndexer with persist_dir={persist_dir}")
 
-        # Try to load or create the collection
+        # Try connecting to the database — if corruption occurs, auto-repair
+        self.client = self._safe_create_client()
+
+        # Try loading collection, otherwise auto-repair
+        self.collection = self._safe_get_or_create_collection("factchecks")
+
+    # ------------------------------------------------------------------
+    # AUTO-REPAIR: Create PersistentClient safely
+    # ------------------------------------------------------------------
+    def _safe_create_client(self):
         try:
-            self.collection = self.client.get_collection("factchecks")
-        except Exception:
-            logger.warning("Collection missing — creating new one.")
-            self.collection = self.client.create_collection("factchecks")
+            return chromadb.PersistentClient(path=self.persist_dir)
+        except Exception as e:
+            logger.error(f"Chroma persistent storage corrupted! {e}")
+            logger.warning("Auto-repair: wiping database folder...")
 
-    # ---------------------------
-    # Helper: sanitize metadata
-    # ---------------------------
+            try:
+                shutil.rmtree(self.persist_dir)
+            except Exception:
+                pass
+
+            os.makedirs(self.persist_dir, exist_ok=True)
+            return chromadb.PersistentClient(path=self.persist_dir)
+
+    # ------------------------------------------------------------------
+    # AUTO-REPAIR: Load or recreate collection safely
+    # ------------------------------------------------------------------
+    def _safe_get_or_create_collection(self, name):
+        try:
+            return self.client.get_collection(name)
+        except Exception:
+            logger.warning("Collection is corrupted or missing. Recreating...")
+            try:
+                self.client.delete_collection(name)
+            except Exception:
+                pass
+            return self.client.create_collection(name)
+
+    # ------------------------------------------------------------------
+    # Metadata sanitization
+    # ------------------------------------------------------------------
     def _sanitize_meta(self, m: dict):
         clean = {}
         for k, v in (m or {}).items():
@@ -48,125 +73,97 @@ class ChromaIndexer:
             elif isinstance(v, (str, int, float, bool)):
                 clean[k] = v
             else:
-                # fallback for nested objects
                 clean[k] = str(v)
         return clean
 
-    # ---------------------------
-    # Helper: ensure string
-    # ---------------------------
     def _ensure_str(self, x):
         return "" if x is None else str(x)
 
-    # ---------------------------
-    # SAFE ADD METHOD (Batched)
-    # ---------------------------
+    # ------------------------------------------------------------------
+    # SAFE ADD: with batching, corruption repair, and retry
+    # ------------------------------------------------------------------
     def add(self, ids, docs, metas, batch_size=256):
-        """
-        Adds documents + embeddings safely:
-        - sanitizes everything
-        - skips empty docs
-        - generates embeddings locally (no ONNX)
-        - adds in batches
-        - automatic recovery if Chroma errors
-        """
 
-        # --- Basic validation ---
         if not ids or not docs or not metas:
-            raise ValueError("ids, docs, metas must be non-empty lists")
+            raise ValueError("ids, docs, metas cannot be empty")
 
         if not (len(ids) == len(docs) == len(metas)):
-            raise ValueError(
-                f"Length mismatch: ids={len(ids)}, docs={len(docs)}, metas={len(metas)}"
-            )
+            raise ValueError("Length mismatch between ids/docs/metas")
 
-        # --- Sanitize ids, docs, metadata ---
+        logger.info(f"Indexing {len(ids)} documents...")
+
+        # sanitize everything
         ids_clean = [self._ensure_str(i) for i in ids]
         docs_clean = [self._ensure_str(d) for d in docs]
         metas_clean = [self._sanitize_meta(m) for m in metas]
 
-        # --- Filter out empty docs ---
+        # filter out empty docs
         filtered = []
         for i, d, m in zip(ids_clean, docs_clean, metas_clean):
-            if isinstance(d, str) and d.strip():
+            if d.strip():
                 filtered.append((i, d.strip(), m))
             else:
-                logger.info(f"Skipping empty/invalid document for id={i}")
+                logger.info(f"Skipping empty doc id={i}")
 
         if not filtered:
-            logger.warning("No valid documents to index after filtering.")
+            logger.warning("No usable documents after filtering.")
             return
 
-        ids_final, docs_final, metas_final = zip(*filtered)
+        ids_f, docs_f, metas_f = zip(*filtered)
 
-        # --- Generate embeddings (768-dim) ---
-        try:
-            embeddings = self.model.encode(
-                list(docs_final),
-                convert_to_numpy=True,
-                normalize_embeddings=True
-            ).tolist()
-        except Exception as e:
-            logger.exception("Embedding generation failed")
-            raise
+        # compute embeddings
+        embeddings = self.model.encode(
+            list(docs_f),
+            convert_to_numpy=True,
+            normalize_embeddings=True
+        ).tolist()
 
-        if len(embeddings) != len(docs_final):
-            raise ValueError("Embedding count mismatch")
-
-        # ---------------------------
-        # Batch insert helper
-        # ---------------------------
-        def _add_batches():
-            n = len(ids_final)
-            batches = math.ceil(n / batch_size)
+        # add in batches
+        def _do_batches():
+            total = len(ids_f)
+            batches = math.ceil(total / batch_size)
 
             for b in range(batches):
                 s = b * batch_size
-                e = min((b + 1) * batch_size, n)
-                logger.info(f"Adding batch {b+1}/{batches} (items {s} to {e})")
-
+                e = min((b + 1) * batch_size, total)
+                logger.info(f"Adding batch {b+1}/{batches} ({s}–{e})")
                 self.collection.add(
-                    ids=list(ids_final[s:e]),
-                    documents=list(docs_final[s:e]),
-                    metadatas=list(metas_final[s:e]),
-                    embeddings=list(embeddings[s:e])
+                    ids=list(ids_f[s:e]),
+                    documents=list(docs_f[s:e]),
+                    metadatas=list(metas_f[s:e]),
+                    embeddings=list(embeddings[s:e]),
                 )
 
-        # ---------------------------
-        # Attempt add — with recovery
-        # ---------------------------
+        # ---- SAFE EXECUTION WITH CORRUPTION RECOVERY ----
         try:
-            _add_batches()
-            logger.info(f"Successfully added {len(ids_final)} documents.")
+            _do_batches()
+            logger.info("Indexing completed successfully.")
 
-        except InternalError as e:
-            logger.warning(f"Chroma InternalError: {e}")
-            logger.info("Attempting auto-recovery by rebuilding collection...")
+        except InternalError as err:
+            logger.error(f"Chroma InternalError: {err}")
+            logger.warning("Auto-repair: wiping DB and rebuilding...")
 
+            # wipe DB completely
             try:
-                # delete & recreate
-                try:
-                    self.client.delete_collection("factchecks")
-                except Exception:
-                    logger.warning("Collection deletion failed or not needed")
+                shutil.rmtree(self.persist_dir)
+            except Exception:
+                pass
 
-                self.collection = self.client.create_collection("factchecks")
+            os.makedirs(self.persist_dir, exist_ok=True)
 
-                # retry batches
-                _add_batches()
-                logger.info("Recovery succeeded — data reindexed.")
+            # recreate client + collection
+            self.client = chromadb.PersistentClient(path=self.persist_dir)
+            self.collection = self.client.create_collection("factchecks")
 
-            except Exception as ee:
-                logger.exception("Recovery failed — cannot reindex.")
-                raise ee
+            # retry indexing
+            _do_batches()
+            logger.info("Auto-repair succeeded. Clean database rebuilt.")
 
-        except InvalidArgumentError as iv:
-            logger.exception("InvalidArgumentError during add")
+        except InvalidArgumentError as ia:
+            logger.error(f"InvalidArgumentError: {ia}")
             raise
 
-        except Exception as ex:
-            logger.exception("Unexpected error during add")
+        except Exception as e:
+            logger.exception("Unexpected indexer error:")
             raise
 
-
-# END FILE
