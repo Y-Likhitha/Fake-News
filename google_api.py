@@ -20,7 +20,7 @@ def fetch_google_factchecks(query=None, lang="en", page_size=20):
         return []
 
     params = {
-        "key": API_KEY,
+        "key": GOOGLE_FACTCHECK_API_KEY,
         "pageSize": page_size,
         "languageCode": lang
     }
