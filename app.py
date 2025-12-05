@@ -10,7 +10,7 @@ with st.sidebar:
             st.header('Settings')
             if st.button('Run pipeline (fetch & index)'):
                 st.info('Running pipeline... this may take a minute')
-                added = run_pipeline(update_google=True, update_altnews=True, update_factly=True, save_csv=True, build_index=False)
+                added = run_pipeline()
                 st.success(f'Pipeline finished. New items added: {added}')
             model = st.text_input('Embedding model', value=os.getenv('EMBEDDING_MODEL','all-MiniLM-L6-v2'))
             k = st.slider('Top-k results', 1, 10, 5)
