@@ -45,6 +45,8 @@ if st.button('Check news'):
         res = qe.query_text(query, top_k=k, score_threshold=threshold)
 
         st.subheader(f"Decision: {res.get('decision')}")
+import os
+st.write("Loaded Key:", os.getenv("GOOGLE_FACTCHECK_API_KEY"))
 
         if res.get('matches'):
             for m in res['matches']:
