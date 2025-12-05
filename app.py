@@ -1,12 +1,12 @@
-        import streamlit as st
-        from pipeline.query import QueryService
-        from pipeline.pipeline import run_pipeline
-        import os
+import streamlit as st
+from pipeline.query import QueryService
+from pipeline.pipeline import run_pipeline
+import os
 
-        st.set_page_config(page_title='Fake News Verifier', layout='wide')
-        st.title('Fake News Verifier — Real-time (Streamlit + Chroma)')
+st.set_page_config(page_title='Fake News Verifier', layout='wide')
+st.title('Fake News Verifier — Real-time (Streamlit + Chroma)')
 
-        with st.sidebar:
+with st.sidebar:
             st.header('Settings')
             if st.button('Run pipeline (fetch & index)'):
                 st.info('Running pipeline... this may take a minute')
