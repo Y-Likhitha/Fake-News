@@ -86,8 +86,8 @@ def run_pipeline():
     indexer = ChromaIndexer(persist_dir=CHROMA_DIR)
 
     normalized = [normalize(item) for item in existing]
-    ids = [item["id"] for item in normalized]
-    texts = [item["text"] for item in normalized]
+    ids = [item["id"] or str(i) for i, item in enumerate(normalized)]
+    texts = [(item["text"] or "").strip() for item in normalized]
     metadatas = [
         {
             "title": item["title"],
@@ -98,6 +98,15 @@ def run_pipeline():
         for item in normalized
     ]
 
-    indexer.add(ids, texts, metadatas)
+    clean_ids = []
+    clean_texts = []
+    clean_metas = []
 
+    for i, t, m in zip(ids, texts, metas):
+        if t and isinstance(t, str) and t.strip():
+            clean_ids.append(i)
+            clean_texts.append(t.strip())
+            clean_metas.append(m)
+
+    indexer.add(clean_ids, clean_texts, clean_metas)
     return len(new_records)
