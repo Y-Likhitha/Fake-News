@@ -1,4 +1,6 @@
 # pipeline.py
+from google_api import fetch_google_factchecks
+
 import os
 import json
 from pathlib import Path
