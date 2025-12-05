@@ -2,7 +2,7 @@ streamlit
 requests
 feedparser
 sentence-transformers
-chromadb
+faiss-cpu
 python-dotenv
 pandas
 tqdm
