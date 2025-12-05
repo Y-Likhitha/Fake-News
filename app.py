@@ -48,10 +48,10 @@ if st.button('Check news'):
 import os
 st.write("Loaded Key:", os.getenv("GOOGLE_FACTCHECK_API_KEY"))
 
-        if res.get('matches'):
+    if res.get('matches'):
             for m in res['matches']:
                 st.markdown(f"**{m.get('title','—')}**  \nSource: {m.get('source')} — Verdict: {m.get('verdict','Unknown')} — Similarity: {m.get('score'):.3f}  \nURL: {m.get('url')}")
-        else:
+    else:
             st.info('No close fact-check found.')
 if st.button("Test Google API"):
     from google_api import fetch_google_factchecks
