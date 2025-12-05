@@ -1,74 +1,79 @@
-import os, json, logging
-from .scraper import fetch_google_factchecks, scrape_altnews_recent, scrape_factly_recent
-from .indexer import ChromaIndexer
+import os
+import json
 from dotenv import load_dotenv
 from pathlib import Path
+from .scraper import fetch_google_factchecks, scrape_altnews, scrape_factly
+from .indexer import ChromaIndexer
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO)
-DATA_DIR = os.getenv('DATA_DIR','./data')
-CHROMA_DIR = os.getenv('CHROMA_PERSIST_DIR','./data/chroma_db')
-GOOGLE_KEY = os.getenv('GOOGLE_FACTCHECK_API_KEY','')
-Path(DATA_DIR).mkdir(parents=True, exist_ok=True)
 
-RAW_JSON = os.path.join(DATA_DIR,'factchecks_raw.jsonl')
+DATA_DIR = os.getenv("DATA_DIR", "./data")
+CHROMA_DIR = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma_db")
+GOOGLE_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY", "")
 
-def _load_raw():
-    if not os.path.exists(RAW_JSON):
+RAW_PATH = Path(DATA_DIR) / "raw.jsonl"
+RAW_PATH.parent.mkdir(exist_ok=True)
+
+
+def load_raw():
+    if not RAW_PATH.exists():
         return []
-    out = []
-    with open(RAW_JSON,'r', encoding='utf-8') as f:
-        for ln in f:
-            try:
-                out.append(json.loads(ln))
-            except:
-                pass
-    return out
+    return [json.loads(l) for l in RAW_PATH.read_text().splitlines()]
 
-def _save_raw(items):
-    with open(RAW_JSON,'w', encoding='utf-8') as f:
-        for it in items:
-            f.write(json.dumps(it, ensure_ascii=False) + '\n')
 
-def normalize_record(rec):
-    txt = rec.get('text') or rec.get('claim') or ''
-    title = rec.get('title') or rec.get('claim') or ''
-    _id = rec.get('url') or rec.get('claim') or f"{rec.get('source')}_{abs(hash(txt)) % (10**10)}"
-    return {'id': _id, 'source': rec.get('source'), 'url': rec.get('url'), 'title': title, 'text': txt, 'published_at': rec.get('published_at') or rec.get('claimDate')}
+def save_raw(items):
+    RAW_PATH.write_text("\n".join(json.dumps(i) for i in items))
 
-def append_unique(existing, new, key='id'):
-    seen = {e.get(key) for e in existing}
+
+def normalize(rec):
+    return {
+        "id": rec.get("url") or rec.get("claim"),
+        "title": rec.get("title") or rec.get("claim"),
+        "text": rec.get("text") or rec.get("claim"),
+        "source": rec.get("source"),
+        "url": rec.get("url"),
+        "verdict": rec.get("verdict"),
+    }
+
+
+def append_unique(existing, new):
+    ids = {r.get("id") for r in existing}
     added = []
     for n in new:
-        k = n.get(key) or n.get('url') or n.get('claim')
-        if k not in seen:
+        nid = n.get("url") or n.get("claim")
+        if nid not in ids:
+            ids.add(nid)
             existing.append(n)
-            seen.add(k)
             added.append(n)
     return existing, added
 
-def run_pipeline(update_google=True, update_altnews=True, update_factly=True, save_csv=True, build_index=True):
-    existing = _load_raw()
-    all_new = []
-    if update_google:
-        g = fetch_google_factchecks(GOOGLE_KEY)
-        existing, added = append_unique(existing, g, key='claim')
-        all_new.extend(added)
-    if update_altnews:
-        a = scrape_altnews_recent(limit=40)
-        existing, added = append_unique(existing, a, key='url')
-        all_new.extend(added)
-    if update_factly:
-        f = scrape_factly_recent(limit=40)
-        existing, added = append_unique(existing, f, key='url')
-        all_new.extend(added)
-    # save raw
-    _save_raw(existing)
-    # normalize and index into Chroma
+
+def run_pipeline():
+    existing = load_raw()
+    new_items = []
+
+    g = fetch_google_factchecks(GOOGLE_KEY)
+    existing, added = append_unique(existing, g)
+    new_items.extend(added)
+
+    a = scrape_altnews()
+    existing, added = append_unique(existing, a)
+    new_items.extend(added)
+
+    f = scrape_factly()
+    existing, added = append_unique(existing, f)
+    new_items.extend(added)
+
+    save_raw(existing)
+
+    # Embed into Chroma
     indexer = ChromaIndexer(persist_dir=CHROMA_DIR)
-    normalized = [normalize_record(r) for r in existing]
-    texts = [n['text'] or n['title'] for n in normalized]
-    ids = [n['id'] for n in normalized]
-    metadatas = [{'title': n['title'], 'source': n['source'], 'url': n['url'], 'published_at': n.get('published_at')} for n in normalized]
-    indexer.add(ids, texts, metadatas)
-    return len(all_new)
+    normalized = [normalize(r) for r in existing]
+
+    ids = [n["id"] for n in normalized]
+    texts = [n["text"] for n in normalized]
+    metas = [{"title": n["title"], "source": n["source"], "url": n["url"], "verdict": n["verdict"]} for n in normalized]
+
+    indexer.add(ids, texts, metas)
+
+    return len(new_items)
