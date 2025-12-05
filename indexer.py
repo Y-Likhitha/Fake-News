@@ -1,7 +1,8 @@
+# indexer.py
 import os
 import shutil
-import logging
 import math
+import logging
 from sentence_transformers import SentenceTransformer
 import chromadb
 from chromadb.errors import InvalidArgumentError, InternalError
@@ -9,62 +10,62 @@ from chromadb.errors import InvalidArgumentError, InternalError
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Disable problematic ONNX conversions
-os.environ["CHROMA_CONVERT_EMBEDDINGS_TO_ONNX"] = "false"
-os.environ["CHROMA_DISABLE_EMBEDDINGS_H5"] = "true"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Disable ONNX conversion (avoid protobuf issues)
+os.environ.setdefault("CHROMA_CONVERT_EMBEDDINGS_TO_ONNX", "false")
+os.environ.setdefault("CHROMA_DISABLE_EMBEDDINGS_H5", "true")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-EMBED_MODEL = "all-mpnet-base-v2"  # 768-dim model
+EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "all-mpnet-base-v2")  # 768-dim default
 
 
 class ChromaIndexer:
-    def __init__(self, persist_dir="./data/chroma_db"):
+    def __init__(self, persist_dir="./data/chroma_db", fallback_in_memory=True):
+        """
+        Tries to create a PersistentClient at persist_dir. If that fails,
+        and fallback_in_memory=True, uses an in-memory chromadb.Client() instead.
+        """
         self.persist_dir = persist_dir
         self.model = SentenceTransformer(EMBED_MODEL)
+        self.fallback_in_memory = fallback_in_memory
 
-        logger.info(f"Initializing ChromaIndexer with persist_dir={persist_dir}")
+        self.client = None
+        self.collection = None
+        self._init_client_and_collection()
 
-        # Try connecting to the database — if corruption occurs, auto-repair
-        self.client = self._safe_create_client()
-
-        # Try loading collection, otherwise auto-repair
-        self.collection = self._safe_get_or_create_collection("factchecks")
-
-    # ------------------------------------------------------------------
-    # AUTO-REPAIR: Create PersistentClient safely
-    # ------------------------------------------------------------------
-    def _safe_create_client(self):
+    def _init_client_and_collection(self):
+        # Try persist first
         try:
-            return chromadb.PersistentClient(path=self.persist_dir)
+            logger.info(f"Attempting PersistentClient at {self.persist_dir}")
+            self.client = chromadb.PersistentClient(path=self.persist_dir)
+            # If client created, try to get/create collection
+            try:
+                self.collection = self.client.get_collection("factchecks")
+            except Exception:
+                logger.info("Persistent collection missing or corrupted; trying to create it.")
+                self.collection = self.client.create_collection("factchecks")
+            logger.info("Using persistent Chroma client.")
+            return
         except Exception as e:
-            logger.error(f"Chroma persistent storage corrupted! {e}")
-            logger.warning("Auto-repair: wiping database folder...")
+            logger.warning(f"Persistent Chroma client FAILED: {e}")
 
+        # Fallback to in-memory client if allowed
+        if self.fallback_in_memory:
             try:
-                shutil.rmtree(self.persist_dir)
-            except Exception:
-                pass
+                logger.info("Falling back to in-memory Chroma client.")
+                # chromadb.Client() returns in-memory client
+                self.client = chromadb.Client()
+                try:
+                    self.collection = self.client.get_collection("factchecks")
+                except Exception:
+                    self.collection = self.client.create_collection("factchecks")
+                logger.info("Using in-memory Chroma client (non-persistent).")
+                return
+            except Exception as e2:
+                logger.exception("In-memory Chroma client also failed.")
+                raise RuntimeError("Both persistent and in-memory Chroma client creation failed.") from e2
 
-            os.makedirs(self.persist_dir, exist_ok=True)
-            return chromadb.PersistentClient(path=self.persist_dir)
+        raise RuntimeError("Persistent Chroma client creation failed and fallback_in_memory is disabled.")
 
-    # ------------------------------------------------------------------
-    # AUTO-REPAIR: Load or recreate collection safely
-    # ------------------------------------------------------------------
-    def _safe_get_or_create_collection(self, name):
-        try:
-            return self.client.get_collection(name)
-        except Exception:
-            logger.warning("Collection is corrupted or missing. Recreating...")
-            try:
-                self.client.delete_collection(name)
-            except Exception:
-                pass
-            return self.client.create_collection(name)
-
-    # ------------------------------------------------------------------
-    # Metadata sanitization
-    # ------------------------------------------------------------------
     def _sanitize_meta(self, m: dict):
         clean = {}
         for k, v in (m or {}).items():
@@ -79,91 +80,93 @@ class ChromaIndexer:
     def _ensure_str(self, x):
         return "" if x is None else str(x)
 
-    # ------------------------------------------------------------------
-    # SAFE ADD: with batching, corruption repair, and retry
-    # ------------------------------------------------------------------
     def add(self, ids, docs, metas, batch_size=256):
-
         if not ids or not docs or not metas:
-            raise ValueError("ids, docs, metas cannot be empty")
-
+            raise ValueError("ids, docs, metas must be non-empty lists")
         if not (len(ids) == len(docs) == len(metas)):
-            raise ValueError("Length mismatch between ids/docs/metas")
+            raise ValueError("Length mismatch: ids, docs, metas")
 
-        logger.info(f"Indexing {len(ids)} documents...")
-
-        # sanitize everything
+        logger.info(f"Indexing {len(ids)} documents (persist_dir={self.persist_dir}).")
         ids_clean = [self._ensure_str(i) for i in ids]
         docs_clean = [self._ensure_str(d) for d in docs]
         metas_clean = [self._sanitize_meta(m) for m in metas]
 
-        # filter out empty docs
         filtered = []
         for i, d, m in zip(ids_clean, docs_clean, metas_clean):
-            if d.strip():
+            if isinstance(d, str) and d.strip():
                 filtered.append((i, d.strip(), m))
             else:
-                logger.info(f"Skipping empty doc id={i}")
+                logger.info(f"Skipping empty/invalid document for id={i}")
 
         if not filtered:
-            logger.warning("No usable documents after filtering.")
+            logger.warning("No valid documents to index after filtering.")
             return
 
-        ids_f, docs_f, metas_f = zip(*filtered)
+        ids_final, docs_final, metas_final = zip(*filtered)
 
-        # compute embeddings
-        embeddings = self.model.encode(
-            list(docs_f),
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        ).tolist()
+        # compute embeddings locally (avoid ONNX)
+        try:
+            embeddings = self.model.encode(list(docs_final), convert_to_numpy=True, normalize_embeddings=True).tolist()
+        except Exception as e:
+            logger.exception("Embedding generation failed")
+            raise
 
-        # add in batches
-        def _do_batches():
-            total = len(ids_f)
-            batches = math.ceil(total / batch_size)
-
+        # batch add helper
+        def _add_batches(client_collection):
+            n = len(ids_final)
+            batches = math.ceil(n / batch_size)
             for b in range(batches):
                 s = b * batch_size
-                e = min((b + 1) * batch_size, total)
-                logger.info(f"Adding batch {b+1}/{batches} ({s}–{e})")
-                self.collection.add(
-                    ids=list(ids_f[s:e]),
-                    documents=list(docs_f[s:e]),
-                    metadatas=list(metas_f[s:e]),
-                    embeddings=list(embeddings[s:e]),
+                e = min((b + 1) * batch_size, n)
+                logger.info(f"Adding batch {b+1}/{batches} (items {s}..{e})")
+                client_collection.add(
+                    ids=list(ids_final[s:e]),
+                    documents=list(docs_final[s:e]),
+                    metadatas=list(metas_final[s:e]),
+                    embeddings=list(embeddings[s:e])
                 )
 
-        # ---- SAFE EXECUTION WITH CORRUPTION RECOVERY ----
+        # Attempt to add; if persistent fails mid-way, try recover (or fallback to in-memory)
         try:
-            _do_batches()
-            logger.info("Indexing completed successfully.")
+            _add_batches(self.collection)
+            logger.info("Indexing finished successfully.")
+            return
+        except Exception as exc:
+            logger.warning(f"Error while adding to current collection: {exc}")
 
-        except InternalError as err:
-            logger.error(f"Chroma InternalError: {err}")
-            logger.warning("Auto-repair: wiping DB and rebuilding...")
+            # if we were using persistent, try to recreate it and retry once
+            if isinstance(self.client, chromadb.PersistentClient):
+                try:
+                    logger.info("Attempting to delete & recreate persistent collection and retry.")
+                    try:
+                        self.client.delete_collection("factchecks")
+                    except Exception:
+                        logger.info("delete_collection may have failed or collection not present.")
+                    self.collection = self.client.create_collection("factchecks")
+                    _add_batches(self.collection)
+                    logger.info("Reindex succeeded after recreating persistent collection.")
+                    return
+                except Exception as e2:
+                    logger.warning(f"Persistent recreate failed: {e2}")
 
-            # wipe DB completely
-            try:
-                shutil.rmtree(self.persist_dir)
-            except Exception:
-                pass
+            # final fallback: try in-memory if allowed
+            if self.fallback_in_memory:
+                try:
+                    logger.info("Falling back to a new in-memory client and indexing there.")
+                    mem_client = chromadb.Client()
+                    try:
+                        mem_collection = mem_client.get_collection("factchecks")
+                    except Exception:
+                        mem_collection = mem_client.create_collection("factchecks")
+                    _add_batches(mem_collection)
+                    # switch our references so queries use in-memory collection from now on
+                    self.client = mem_client
+                    self.collection = mem_collection
+                    logger.info("Indexing succeeded on in-memory fallback.")
+                    return
+                except Exception as e3:
+                    logger.exception("In-memory fallback also failed.")
+                    raise
 
-            os.makedirs(self.persist_dir, exist_ok=True)
-
-            # recreate client + collection
-            self.client = chromadb.PersistentClient(path=self.persist_dir)
-            self.collection = self.client.create_collection("factchecks")
-
-            # retry indexing
-            _do_batches()
-            logger.info("Auto-repair succeeded. Clean database rebuilt.")
-
-        except InvalidArgumentError as ia:
-            logger.error(f"InvalidArgumentError: {ia}")
+            # ultimately re-raise if we couldn't recover
             raise
-
-        except Exception as e:
-            logger.exception("Unexpected indexer error:")
-            raise
-
