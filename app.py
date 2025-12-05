@@ -16,9 +16,9 @@ with st.sidebar:
             k = st.slider('Top-k results', 1, 10, 5)
             threshold = st.slider('Match similarity threshold', 50, 95, 75) / 100.0
 
-        st.markdown('Enter headline or claim to verify. The app will search the Chroma/embeddings index for matching fact-checks.')
-        query = st.text_area('Claim / Text', height=120)
-        if st.button('Check news'):
+st.markdown('Enter headline or claim to verify. The app will search the Chroma/embeddings index for matching fact-checks.')
+query = st.text_area('Claim / Text', height=120)
+if st.button('Check news'):
             if not query.strip():
                 st.warning('Please enter some text to check.')
             else:
