@@ -1,4 +1,5 @@
 # query_engine.py
+from google_api import fetch_google_factchecks
 import os
 import numpy as np
 from sentence_transformers import SentenceTransformer
