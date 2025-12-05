@@ -45,6 +45,6 @@ def run_pipeline(limit_per_feed=40):
     docs = [n['text'] for n in normalized if n['text'].strip()]
     metas = [{'title': n['title'], 'source': n['source'], 'url': n['url'], 'verdict': n['verdict']} for n in normalized if n['text'].strip()]
     if ids:
-        idx = SimpleIndexer(persist_dir=CHROMA_DIR)
+        idx = ChromaIndexer(persist_dir=CHROMA_DIR)
         idx.add(ids, docs, metas)
     return len(new)
