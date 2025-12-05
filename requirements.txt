@@ -1,0 +1,10 @@
+
+streamlit
+requests
+feedparser
+sentence-transformers
+chromadb
+python-dotenv
+pandas
+scikit-learn
+tqdm
