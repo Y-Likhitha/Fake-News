@@ -2,6 +2,7 @@ import os
 import json
 from dotenv import load_dotenv
 from pathlib import Path
+
 from .scraper import fetch_google_factchecks, scrape_altnews, scrape_factly
 from .indexer import ChromaIndexer
 
@@ -12,68 +13,87 @@ CHROMA_DIR = os.getenv("CHROMA_PERSIST_DIR", "./data/chroma_db")
 GOOGLE_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY", "")
 
 RAW_PATH = Path(DATA_DIR) / "raw.jsonl"
-RAW_PATH.parent.mkdir(exist_ok=True)
+RAW_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_raw():
     if not RAW_PATH.exists():
         return []
-    return [json.loads(l) for l in RAW_PATH.read_text().splitlines()]
+    with open(RAW_PATH, "r", encoding="utf-8") as f:
+        return [json.loads(line) for line in f]
 
 
 def save_raw(items):
-    RAW_PATH.write_text("\n".join(json.dumps(i) for i in items))
+    with open(RAW_PATH, "w", encoding="utf-8") as f:
+        for item in items:
+            f.write(json.dumps(item) + "\n")
 
 
-def normalize(rec):
+def normalize(record):
     return {
-        "id": rec.get("url") or rec.get("claim"),
-        "title": rec.get("title") or rec.get("claim"),
-        "text": rec.get("text") or rec.get("claim"),
-        "source": rec.get("source"),
-        "url": rec.get("url"),
-        "verdict": rec.get("verdict"),
+        "id": record.get("url") or record.get("claim"),
+        "title": record.get("title") or record.get("claim"),
+        "text": record.get("text") or record.get("claim"),
+        "source": record.get("source"),
+        "url": record.get("url"),
+        "verdict": record.get("verdict")
     }
 
 
-def append_unique(existing, new):
-    ids = {r.get("id") for r in existing}
+def append_unique(existing, new_items):
+    seen = {item.get("id") for item in existing}
     added = []
-    for n in new:
-        nid = n.get("url") or n.get("claim")
-        if nid not in ids:
-            ids.add(nid)
-            existing.append(n)
-            added.append(n)
+
+    for item in new_items:
+        uid = item.get("url") or item.get("claim")
+        if uid not in seen:
+            item["id"] = uid
+            seen.add(uid)
+            existing.append(item)
+            added.append(item)
+
     return existing, added
 
 
 def run_pipeline():
+    # Load current dataset
     existing = load_raw()
-    new_items = []
+    new_records = []
 
-    g = fetch_google_factchecks(GOOGLE_KEY)
-    existing, added = append_unique(existing, g)
-    new_items.extend(added)
+    # Google Fact Check API
+    google_items = fetch_google_factchecks(GOOGLE_KEY)
+    existing, added = append_unique(existing, google_items)
+    new_records.extend(added)
 
-    a = scrape_altnews()
-    existing, added = append_unique(existing, a)
-    new_items.extend(added)
+    # Altnews
+    altnews_items = scrape_altnews()
+    existing, added = append_unique(existing, altnews_items)
+    new_records.extend(added)
 
-    f = scrape_factly()
-    existing, added = append_unique(existing, f)
-    new_items.extend(added)
+    # Factly
+    factly_items = scrape_factly()
+    existing, added = append_unique(existing, factly_items)
+    new_records.extend(added)
 
+    # Save updated raw dataset
     save_raw(existing)
 
-    # Embed into Chroma
+    # Build Chroma index
     indexer = ChromaIndexer(persist_dir=CHROMA_DIR)
-    normalized = [normalize(r) for r in existing]
 
-    ids = [n["id"] for n in normalized]
-    texts = [n["text"] for n in normalized]
-    metas = [{"title": n["title"], "source": n["source"], "url": n["url"], "verdict": n["verdict"]} for n in normalized]
+    normalized = [normalize(item) for item in existing]
+    ids = [item["id"] for item in normalized]
+    texts = [item["text"] for item in normalized]
+    metadatas = [
+        {
+            "title": item["title"],
+            "source": item["source"],
+            "url": item["url"],
+            "verdict": item["verdict"]
+        }
+        for item in normalized
+    ]
 
-    indexer.add(ids, texts, metas)
+    indexer.add(ids, texts, metadatas)
 
-    return len(new_items)
+    return len(new_records)
