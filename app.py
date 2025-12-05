@@ -1,14 +1,14 @@
-    import streamlit as st
-    import os
-    from pipeline import run_pipeline
-    from query_engine import QueryEngine
+import streamlit as st
+import os
+from pipeline import run_pipeline
+from query_engine import QueryEngine
 
-    st.set_page_config(page_title='Fake News Verifier', layout='wide')
-    st.markdown("""<style>
-    body {background:#000; color:#00ff00}
-    .stApp {background:#000;}
-    .css-1x8dg53 {color:#00ff00}
-    </style>""", unsafe_allow_html=True)
+st.set_page_config(page_title='Fake News Verifier', layout='wide')
+st.markdown("""<style>
+body {background:#000; color:#00ff00}
+.stApp {background:#000;}
+.css-1x8dg53 {color:#00ff00}
+</style>""", unsafe_allow_html=True)
 
     st.title('🕵️ Fake News Verifier — Dark (mpnet)')
 
