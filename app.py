@@ -27,6 +27,4 @@ if st.button('Check news'):
                 st.write('Decision:', res.get('decision'))
                 st.write('Top matches:')
                 for m in res.get('matches', []):
-                    st.markdown(f"- **{m.get('title') or '—'}**  
-Source: {m.get('source')} — Score: {m.get('score'):.3f}  
-URL: {m.get('url')}")
+                    st.markdown(f"- **{m.get('title') or '—'}**Source: {m.get('source')} — Score: {m.get('score'):.3f} URL: {m.get('url')}")
