@@ -3,7 +3,7 @@ import os
 import requests
 from datetime import datetime
 
-API_KEY = os.getenv("GOOGLE_FACTCHECK_API_KEY")
+GOOGLE_FACTCHECK_API_KEY=os.getenv("GOOGLE_FACTCHECK_API_KEY")
 
 ENDPOINT = (
     "https://factchecktools.googleapis.com/v1alpha1/claims:search"
