@@ -10,9 +10,9 @@ body {background:#000; color:#00ff00}
 .css-1x8dg53 {color:#00ff00}
 </style>""", unsafe_allow_html=True)
 
-    st.title('🕵️ Fake News Verifier — Dark (mpnet)')
+st.title('🕵️ Fake News Verifier — Dark (mpnet)')
 
-    with st.sidebar:
+with st.sidebar:
         st.header('Controls')
         if st.button('Run pipeline (fetch & index)'):
             st.info('Running pipeline... this may take a minute.')
