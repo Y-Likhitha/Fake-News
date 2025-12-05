@@ -12,6 +12,10 @@ with st.sidebar:
                 st.info('Running pipeline... this may take a minute')
                 added = run_pipeline()
                 st.success(f'Pipeline finished. New items added: {added}')
+            if st.button("Update fact-check database"):
+                    st.info("Running pipeline... please wait.")
+                    added = run_pipeline()
+                    st.success(f"Database updated. New fact-checks: {added}")
             model = st.text_input('Embedding model', value=os.getenv('EMBEDDING_MODEL','all-MiniLM-L6-v2'))
             k = st.slider('Top-k results', 1, 10, 5)
             threshold = st.slider('Match similarity threshold', 50, 95, 75) / 100.0
