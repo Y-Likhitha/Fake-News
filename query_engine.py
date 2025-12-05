@@ -1,27 +1,17 @@
 # query_engine.py
-from google_api import fetch_google_factchecks
-import os
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from indexer import FAISSIndexer
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-EMBED_MODEL = os.getenv("EMBEDDING_MODEL", "all-mpnet-base-v2")
-
+from google_api import fetch_google_factchecks
 
 class QueryEngine:
-    def __init__(self, model_name=EMBED_MODEL):
+    def __init__(self, model_name="all-mpnet-base-v2"):
         self.model = SentenceTransformer(model_name)
         self.indexer = FAISSIndexer(model_name)
         if self.indexer.index_exists():
             self.index, self.ids, self.metas, self.dim = self.indexer.load_index()
         else:
             self.index = None
-            self.ids = []
-            self.metas = []
 
     @staticmethod
     def _normalize(emb):
@@ -30,45 +20,66 @@ class QueryEngine:
         return emb / norms
 
     @staticmethod
-    def distance_to_similarity(ip_score):
-        # ip_score = cosine since vectors are normalized; range [-1,1]
-        # Map to [0,1], but we'll keep as-is for thresholding expecting 0..1
-        return float((ip_score + 1.0) / 2.0)
+    def distance_to_similarity(ip):
+        return float((ip + 1.0) / 2.0)
 
-    def query_text(self, text, top_k=5, score_threshold=0.7):
+    def _faiss_query(self, text, top_k):
         if self.index is None:
-            return {"decision": "no_match", "matches": []}
+            return []
 
-        emb = self.model.encode([text], convert_to_numpy=True, normalize_embeddings=False)
-        emb = emb.astype("float32")
+        emb = self.model.encode([text], convert_to_numpy=True).astype("float32")
         emb = self._normalize(emb)
 
-        # faiss returns (D, I) where D are inner products
         D, I = self.index.search(emb, top_k)
-        D = D[0]
-        I = I[0]
+        D, I = D[0], I[0]
 
         matches = []
         for score, idx in zip(D, I):
-            if idx < 0 or idx >= len(self.ids):
+            if idx < 0:
                 continue
-            sim = float(score)  # cosine inner product in [-1,1]
-            similarity = self.distance_to_similarity(sim)
             meta = self.metas[idx]
+            sim = self.distance_to_similarity(score)
             matches.append({
-                "id": self.ids[idx],
-                "title": meta.get("title", ""),
-                "source": meta.get("source", ""),
+                "title": meta["title"],
+                "source": meta["source"],
                 "verdict": meta.get("verdict", ""),
-                "url": meta.get("url", ""),
-                "score": similarity
+                "url": meta["url"],
+                "score": sim
+            })
+        return matches
+
+    def query_text(self, text, top_k=5, score_threshold=0.7):
+        
+        # -------------------------
+        # 1️⃣  Semantic matches (FAISS)
+        # -------------------------
+        semantic_matches = self._faiss_query(text, top_k)
+
+        # -------------------------
+        # 2️⃣  Google Fact Check API (Exact fact-checks)
+        # -------------------------
+        google_matches_raw = fetch_google_factchecks(query=text, page_size=5)
+
+        google_matches = []
+        for g in google_matches_raw:
+            google_matches.append({
+                "title": g["title"],
+                "source": g["source"],
+                "verdict": g["verdict"],
+                "url": g["url"],
+                "score": 1.0  # Google API = exact match
             })
 
-        # filter by threshold (user uses 0..1 threshold)
-        filtered = [m for m in matches if m["score"] >= score_threshold]
+        # Merge both
+        all_matches = semantic_matches + google_matches
+
+        # -------------------------
+        # 3️⃣  Threshold filtering
+        # -------------------------
+        filtered = [m for m in all_matches if m["score"] >= score_threshold]
+
         if filtered:
             filtered.sort(key=lambda x: x["score"], reverse=True)
             return {"decision": "matched_fact", "matches": filtered}
-        else:
-            # return raw matches for debugging but decision no_match
-            return {"decision": "no_match", "matches": matches}
+
+        return {"decision": "no_match", "matches": all_matches}
