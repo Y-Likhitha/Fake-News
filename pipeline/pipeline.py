@@ -16,6 +16,9 @@ RAW_PATH = Path(DATA_DIR) / "raw.jsonl"
 RAW_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
+# ---------------------------
+# Load raw dataset
+# ---------------------------
 def load_raw():
     if not RAW_PATH.exists():
         return []
@@ -23,19 +26,27 @@ def load_raw():
         return [json.loads(line) for line in f]
 
 
+# ---------------------------
+# Save raw dataset
+# ---------------------------
 def save_raw(items):
     with open(RAW_PATH, "w", encoding="utf-8") as f:
         for item in items:
             f.write(json.dumps(item) + "\n")
 
 
+# ---------------------------
+# Normalize scraped records
+# ---------------------------
 def normalize(record):
     text = record.get("text") or record.get("claim") or ""
     title = record.get("title") or record.get("claim") or "Untitled"
 
+    uid = record.get("url") or record.get("claim") or str(abs(hash(text)))
+
     return {
-        "id": record.get("url") or record.get("claim") or str(abs(hash(text))),
-        "title": title,
+        "id": uid,
+        "title": title.strip(),
         "text": text.strip(),
         "source": record.get("source"),
         "url": record.get("url"),
@@ -43,15 +54,18 @@ def normalize(record):
     }
 
 
-
+# ---------------------------
+# Merge without duplicates
+# ---------------------------
 def append_unique(existing, new_items):
     seen = {item.get("id") for item in existing}
     added = []
 
     for item in new_items:
         uid = item.get("url") or item.get("claim")
+        if not uid:
+            continue
         if uid not in seen:
-            item["id"] = uid
             seen.add(uid)
             existing.append(item)
             added.append(item)
@@ -59,35 +73,34 @@ def append_unique(existing, new_items):
     return existing, added
 
 
+# ---------------------------
+# MAIN PIPELINE
+# ---------------------------
 def run_pipeline():
-    # Load current dataset
     existing = load_raw()
     new_records = []
 
-    # Google Fact Check API
+    # Fetch data
     google_items = fetch_google_factchecks(GOOGLE_KEY)
     existing, added = append_unique(existing, google_items)
     new_records.extend(added)
 
-    # Altnews
-    altnews_items = scrape_altnews()
-    existing, added = append_unique(existing, altnews_items)
+    alt_items = scrape_altnews()
+    existing, added = append_unique(existing, alt_items)
     new_records.extend(added)
 
-    # Factly
     factly_items = scrape_factly()
     existing, added = append_unique(existing, factly_items)
     new_records.extend(added)
 
-    # Save updated raw dataset
+    # Save updated dataset
     save_raw(existing)
 
-    # Build Chroma index
-    indexer = ChromaIndexer(persist_dir=CHROMA_DIR)
-
+    # Normalize for indexing
     normalized = [normalize(item) for item in existing]
-    ids = [item["id"] or str(i) for i, item in enumerate(normalized)]
-    texts = [(item["text"] or "").strip() for item in normalized]
+
+    ids = [item["id"] for item in normalized]
+    texts = [item["text"] for item in normalized]
     metadatas = [
         {
             "title": item["title"],
@@ -98,15 +111,19 @@ def run_pipeline():
         for item in normalized
     ]
 
+    # CLEANING: remove any empty / None texts
     clean_ids = []
     clean_texts = []
     clean_metas = []
 
-    for i, t, m in zip(ids, texts, metas):
+    for i, t, m in zip(ids, texts, metadatas):
         if t and isinstance(t, str) and t.strip():
             clean_ids.append(i)
             clean_texts.append(t.strip())
             clean_metas.append(m)
 
+    # Index into Chroma
+    indexer = ChromaIndexer(persist_dir=CHROMA_DIR)
     indexer.add(clean_ids, clean_texts, clean_metas)
+
     return len(new_records)
