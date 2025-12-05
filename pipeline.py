@@ -40,30 +40,41 @@ def normalize(record):
 
 def run_pipeline(limit_per_feed=40):
     existing = load_raw()
-    feeds = fetch_all(limit_per_feed=limit_per_feed)
+    new_items = []
 
-    # dedupe
+    # 1. RSS FEEDS
+    rss_items = fetch_all(limit_per_feed=limit_per_feed)
+
+    # 2. GOOGLE FACT CHECK API (latest fact-checks)
+    google_items = fetch_google_factchecks(page_size=20)
+
+    combined = rss_items + google_items
+
+    # Deduplicate
     seen = {it.get("id") for it in existing}
-    added = []
-    for f in feeds:
-        uid = f.get("url") or f.get("title")
+    for item in combined:
+        uid = item.get("url") or item.get("title")
         if not uid:
             continue
         if uid not in seen:
             seen.add(uid)
-            existing.append(f)
-            added.append(f)
+            existing.append(item)
+            new_items.append(item)
 
     save_raw(existing)
 
+    # Normalize
     normalized = [normalize(r) for r in existing if (r.get("text") or "").strip()]
 
     ids = [n["id"] for n in normalized]
     docs = [n["text"] for n in normalized]
-    metas = [{"title": n["title"], "source": n["source"], "url": n["url"], "verdict": n.get("verdict","")} for n in normalized]
+    metas = [
+        {"title": n["title"], "source": n["source"], "url": n["url"], "verdict": n["verdict"]}
+        for n in normalized
+    ]
 
-    indexer = FAISSIndexer()
-    if ids:
-        indexer.build_index(ids, docs, metas)
+    # Rebuild FAISS
+    FAISSIndexer().build_index(ids, docs, metas)
 
-    return len(added)
+    return len(new_items)
+
